@@ -1,6 +1,9 @@
 ﻿using System;
 using System.IO;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Collections.Generic;
 
 using System.Drawing;
 using Console = Colorful.Console;
@@ -8,132 +11,223 @@ using Console = Colorful.Console;
 // ClientID and settings
 using static ConfigValues;
 
+public static class Logger
+{
+    private static readonly string LogDir = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "FLStudioRPC",
+        "logs"
+    );
+
+    private static readonly string LogFilePath = Path.Combine(LogDir, "flrpc.log");
+    private const long MaxLogSize = 512 * 1024; // 512 KB
+
+    private static readonly object _lock = new object();
+
+    public static void Log(string level, string message)
+    {
+        try
+        {
+            lock (_lock)
+            {
+                Directory.CreateDirectory(LogDir);
+
+                // Rotate if too large
+                if (File.Exists(LogFilePath))
+                {
+                    var fileInfo = new FileInfo(LogFilePath);
+                    if (fileInfo.Length > MaxLogSize)
+                    {
+                        string oldLog = LogFilePath + ".old";
+                        if (File.Exists(oldLog)) File.Delete(oldLog);
+                        File.Move(LogFilePath, oldLog);
+                    }
+                }
+
+                using (var writer = new StreamWriter(LogFilePath, true))
+                {
+                    writer.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [{level}] {message}");
+                }
+            }
+        }
+        catch
+        {
+            // Last resort - don't crash over logging
+        }
+    }
+
+    public static void Info(string message) => Log("INFO", message);
+    public static void Warn(string message) => Log("WARN", message);
+    public static void Error(string message) => Log("ERROR", message);
+
+    public static void Error(string message, Exception ex)
+    {
+        Log("ERROR", $"{message}: {ex.Message}");
+        Log("ERROR", $"  Stack trace: {ex.StackTrace}");
+    }
+}
+
 public static class Utils
 {
+    // Win32 imports for enumerating windows
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
+    [DllImport("user32.dll")]
+    private static extern int GetWindowTextLength(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    // State tracking for change-only logging
+    private static string _lastWindowTitle = null;
+    private static bool _lastProcessFound = false;
+    private static bool _lastNoWindowWarned = false;
+
     public static string GetMainWindowsTitleByProcessNames(params string[] processNames)
     {
-        // Iterate through the provided process names5
+        // Collect all process IDs for the target process names
+        var targetPids = new HashSet<uint>();
         foreach (var processName in processNames)
         {
             try
             {
-                // Attempt to get processes by the given name
                 Process[] processes = Process.GetProcessesByName(processName);
-
-                // Check if any processes were found
-                if (processes.Length > 0)
+                foreach (var proc in processes)
                 {
-                    // Return the main window title of the first process found
-                    return processes[0].MainWindowTitle;
+                    targetPids.Add((uint)proc.Id);
                 }
             }
             catch (Exception ex)
             {
-                // Handle exceptions and print an error message
-                Console.WriteLine($"Error finding main window title by process name: {ex.Message}", Color.Red);
-                Utils.LogException(ex, "GetMainWindowsTitleByProcessNames");
-
-                // Return null in case of an exception
-                return null;
+                Logger.Error($"Error enumerating processes for '{processName}'", ex);
             }
         }
 
-        // Return null if no processes with the specified names were found
-        return null;
+        if (targetPids.Count == 0)
+        {
+            if (_lastProcessFound)
+            {
+                Logger.Info("FL processes no longer found");
+                _lastProcessFound = false;
+                _lastNoWindowWarned = false;
+            }
+            return null;
+        }
+
+        if (!_lastProcessFound)
+        {
+            Logger.Info($"FL process detected ({targetPids.Count} PID(s))");
+            _lastProcessFound = true;
+        }
+
+        // Use EnumWindows to find a visible window belonging to one of these processes
+        string foundTitle = null;
+
+        EnumWindows((hWnd, lParam) =>
+        {
+            if (!IsWindowVisible(hWnd))
+                return true; // continue
+
+            GetWindowThreadProcessId(hWnd, out uint windowPid);
+
+            if (!targetPids.Contains(windowPid))
+                return true; // continue
+
+            int length = GetWindowTextLength(hWnd);
+            if (length == 0)
+                return true; // continue
+
+            var sb = new StringBuilder(length + 1);
+            GetWindowText(hWnd, sb, sb.Capacity);
+            string title = sb.ToString();
+
+            if (!string.IsNullOrEmpty(title))
+            {
+                foundTitle = title;
+                return false; // stop enumerating
+            }
+
+            return true; // continue
+        }, IntPtr.Zero);
+
+        if (foundTitle == null)
+        {
+            if (!_lastNoWindowWarned)
+            {
+                Logger.Warn($"FL processes found ({targetPids.Count} PID(s)) but no visible window with a title");
+                _lastNoWindowWarned = true;
+            }
+        }
+        else
+        {
+            _lastNoWindowWarned = false;
+
+            if (foundTitle != _lastWindowTitle)
+            {
+                Logger.Info($"Window title changed: '{_lastWindowTitle}' -> '{foundTitle}'");
+                _lastWindowTitle = foundTitle;
+            }
+        }
+
+        return foundTitle;
     }
 
     public static Version GetApplicationVersion(string processName)
     {
-        // Get processes by the given name
         Process[] processes = Process.GetProcessesByName(processName);
 
-        // Check if any processes were found
         if (processes.Length > 0)
         {
-            // Get the file path of the main module (executable) of the first process found
-            string filePath = processes[0].MainModule.FileName;
-
-            // Check if the file path is not empty and the file exists
-            if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
+            try
             {
-                try
-                {
-                    // Retrieve version information from the file
-                    FileVersionInfo versionInfo = FileVersionInfo.GetVersionInfo(filePath);
+                string filePath = processes[0].MainModule.FileName;
 
-                    // Return a Version object created from the file version information
+                if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
+                {
+                    FileVersionInfo versionInfo = FileVersionInfo.GetVersionInfo(filePath);
                     return new Version(versionInfo.FileVersion);
                 }
-                catch (Exception ex)
+                else
                 {
-                    // Handle exceptions and print an error message
-                    Console.WriteLine($"Error retrieving version information: {ex.Message}", Color.Red);
-                    Utils.LogException(ex, "GetApplicationVersion");
-
-                    return null;
+                    Logger.Warn($"GetApplicationVersion('{processName}'): filePath empty or missing ('{filePath}')");
                 }
             }
-        }
-
-        // Return null if no processes with the specified name were found, or if version information couldn't be retrieved
-        return null;
-    }
-
-    public static void LogException(Exception ex, string functionInfo = "")
-    {
-        try
-        {
-            string LogFilePath = "fls_rpc_error_log.txt";
-
-            // Log the exception details
-            using (StreamWriter writer = new StreamWriter(LogFilePath, true))
+            catch (Exception ex)
             {
-                writer.WriteLine($"Timestamp: {DateTime.Now}");
-                writer.WriteLine($"Exception: {ex.Message}");
-                writer.WriteLine($"Stack trace: {ex.StackTrace}");
-
-                // Log function names
-                if (!string.IsNullOrEmpty(functionInfo))
-                {
-                    writer.WriteLine($"Function: {functionInfo}");
-                }
-
-                // Separator for better readability
-                writer.WriteLine(new string('-', 50)); 
+                Console.WriteLine($"Error retrieving version information: {ex.Message}", Color.Red);
+                Logger.Error($"GetApplicationVersion failed for '{processName}'", ex);
+                return null;
             }
         }
-        catch (Exception logEx)
-        {
-            // Log a message to console in case writing to the log file fails
-            Console.WriteLine($"Error logging exception: {logEx.Message}");
-        }
+
+        return null;
     }
 
     public static FLInfo GetFLInfo()
     {
-        // Create a new FLInfo object to store FL Studio's information
         FLInfo Info = new FLInfo();
 
-        // Get FL Studio's title from the main window
         string fullTitle = GetMainWindowsTitleByProcessNames("FL", "FL64");
 
-        // Check if the title is empty or null
         if (string.IsNullOrEmpty(fullTitle))
         {
-            // Set project name and app name to null if the title is empty or null
             Info.ProjectName = null;
             Info.AppName = null;
         }
         else
         {
-            // Check if accurate version information is enabled in the config
             if (AccurateVersion)
             {
-                // Retrieve the version information for FL Studio
                 Version accurateVersion = GetApplicationVersion("FL64") ?? GetApplicationVersion("FL");
-
-                // Set the app name to (example) "FL Studio 20.5.2.1576" if the version information is available,
-                // otherwise set it to null
                 Info.AppName = accurateVersion != null ? $"FL Studio {accurateVersion}" : null;
             }
             else
@@ -145,7 +239,6 @@ public static class Utils
             }
         }
 
-        // Return FLInfo object containing FL Studio's data
         return Info;
     }
 

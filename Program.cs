@@ -57,8 +57,12 @@ public static class Program
         // Don't update the presence if it didn't change
         _Client.SkipIdenticalPresence = true;
 
-        // Use a file logger instead of console logger since we're running as WinExe
-        _Client.Logger = new DiscordRPC.Logging.FileLogger("discord_rpc_log.txt")
+        // Use a file logger in the proper logs directory
+        string discordLogPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "FLStudioRPC", "logs", "discord_rpc.log"
+        );
+        _Client.Logger = new DiscordRPC.Logging.FileLogger(discordLogPath)
         {
             Level = DiscordRPC.Logging.LogLevel.Warning
         };
@@ -193,6 +197,8 @@ public static class Program
         // Save default config with default values (also load it at startup, the function is already called in SaveConfig)
         SaveConfig(ConfigPath);
 
+        Logger.Info("RPC loop started");
+
         bool wasRunning = false;
 
         // Continuous monitoring loop
@@ -212,6 +218,7 @@ public static class Program
                     if (!wasRunning)
                     {
                         // FL Studio just started - initialize RPC
+                        Logger.Info("FL Studio detected, initializing Discord RPC");
                         InitializeRPC();
 
                         // Initialize timestamp if enabled
@@ -243,6 +250,7 @@ public static class Program
                     // FL Studio is not running
                     if (wasRunning)
                     {
+                        Logger.Info("FL Studio closed, clearing Discord presence");
                         // FL Studio just closed - clear presence and dispose client
                         _Client?.ClearPresence();
                         _Client?.Dispose();
@@ -256,24 +264,7 @@ public static class Program
             }
             catch (Exception ex)
             {
-                // Log errors to a user-writable location
-                try
-                {
-                    string logPath = Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                        "FLStudioRPC",
-                        "rpc_error.txt"
-                    );
-
-                    // Create directory if it doesn't exist
-                    Directory.CreateDirectory(Path.GetDirectoryName(logPath));
-
-                    File.WriteAllText(logPath, $"Error: {ex.Message}\n{ex.StackTrace}");
-                }
-                catch
-                {
-                    // If we can't even write the log, just silently continue
-                }
+                Logger.Error("RPC loop exception", ex);
             }
         }
     }
