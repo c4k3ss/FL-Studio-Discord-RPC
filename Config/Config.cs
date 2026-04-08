@@ -71,7 +71,7 @@ public static class ConfigSettings
         catch (Exception ex)
         {
             Console.WriteLine($"Couldn't convert configuration values to the appropriate types: {ex.Message}", Color.Red);
-            Utils.LogException(ex, "ConvertValue");
+            Logger.Error("ConvertValue failed", ex);
             return null;
         }
     }
@@ -105,7 +105,7 @@ public static class ConfigSettings
         catch (Exception ex)
         {
             Console.WriteLine($"Error setting configuration values: {ex.Message}", Color.Red);
-            Utils.LogException(ex, "SetValues");
+            Logger.Error("SetValues failed", ex);
         }
     }
 
@@ -139,7 +139,7 @@ public static class ConfigSettings
         catch (Exception ex)
         {
             Console.WriteLine($"Error saving current configuration: {ex.Message}", Color.Red);
-            Utils.LogException(ex, "SaveCurrentConfig");
+            Logger.Error("SaveCurrentConfig failed", ex);
         }
     }
 
@@ -193,7 +193,7 @@ public static class ConfigSettings
         {
             // Handle exceptions (e.g., file I/O, JSON serialization, conversion)
             Console.WriteLine($"Error saving configuration: {ex.Message}", Color.Red);
-            Utils.LogException(ex, "SaveConfig");
+            Logger.Error("SaveConfig failed", ex);
         }
     }
 
@@ -214,7 +214,7 @@ public static class ConfigSettings
         {
             // Handle exceptions (e.g., file not found, invalid JSON format)
             Console.WriteLine($"Error loading configuration: {ex.Message}", Color.Red);
-            Utils.LogException(ex, "LoadConfig");
+            Logger.Error("LoadConfig failed", ex);
         }
     }
 }

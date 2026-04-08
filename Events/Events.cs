@@ -20,11 +20,13 @@ public static class Events
     {
         Console.WriteLine($"Received Ready from user => {e.User.Username}", Color.LimeGreen);
         Console.WriteLine($"RPC version => {e.Version}\n", Color.LimeGreen);
+        Logger.Info($"Discord RPC ready: user='{e.User.Username}', version={e.Version}");
     }
 
     public static void OnConnectionEstablished(object sender, ConnectionEstablishedMessage e)
     {
         Console.WriteLine("Pipe connection established successfully", Color.LimeGreen);
+        Logger.Info("Discord pipe connection established");
     }
 
     public static void OnPresenceUpdate(object sender, PresenceMessage e)
@@ -35,18 +37,21 @@ public static class Events
     public static void OnError(object sender, ErrorMessage e)
     {
         Console.WriteLine($"An error occured => ({e.Code}) {e.Message}", Color.Red);
+        Logger.Error($"Discord RPC error: ({e.Code}) {e.Message}");
         Deinitialize();
     }
 
     public static void OnClose(object sender, CloseMessage e)
     {
         Console.WriteLine($"Lost connection with client => {e.Reason}", Color.Red);
+        Logger.Warn($"Discord RPC connection closed: {e.Reason}");
         Deinitialize();
     }
 
     public static void OnConnectionFailed(object sender, ConnectionFailedMessage e)
     {
         Console.WriteLine("Pipe connection failed", Color.Red);
+        Logger.Error("Discord pipe connection failed");
         Deinitialize();
     }
 }
